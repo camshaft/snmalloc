@@ -7,6 +7,8 @@
 #  include "snmalloc/snmalloc.h"
 #endif
 
+#include "subheap.h"
+
 #include <string.h>
 
 #ifndef SNMALLOC_EXPORT
@@ -62,4 +64,57 @@ extern "C" SNMALLOC_EXPORT size_t
 SNMALLOC_NAME_MANGLE(rust_usable_size)(const void* ptr)
 {
   return alloc_size(ptr);
+}
+
+// ---------------------------------------------------------------------------
+// Sub-heap API
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a sub-heap with the given byte budget. Returns an opaque handle, or
+ * nullptr if the internal allocation fails.
+ */
+extern "C" SNMALLOC_EXPORT void*
+SNMALLOC_NAME_MANGLE(create_sub_heap)(size_t size_limit)
+{
+  return create_sub_heap(size_limit);
+}
+
+/**
+ * Allocate from a sub-heap. Returns nullptr if the budget would be exceeded.
+ */
+extern "C" SNMALLOC_EXPORT void*
+SNMALLOC_NAME_MANGLE(sub_heap_alloc)(void* heap, size_t alignment, size_t size)
+{
+  return sub_heap_alloc(static_cast<SubHeapHandle*>(heap), alignment, size);
+}
+
+/**
+ * Allocate zero-initialised memory from a sub-heap.
+ */
+extern "C" SNMALLOC_EXPORT void* SNMALLOC_NAME_MANGLE(sub_heap_alloc_zeroed)(
+  void* heap, size_t alignment, size_t size)
+{
+  return sub_heap_alloc_zeroed(
+    static_cast<SubHeapHandle*>(heap), alignment, size);
+}
+
+/**
+ * Free a pointer previously allocated from a sub-heap, returning the bytes
+ * to the budget.
+ */
+extern "C" SNMALLOC_EXPORT void SNMALLOC_NAME_MANGLE(sub_heap_dealloc)(
+  void* heap, void* ptr, size_t alignment, size_t size)
+{
+  sub_heap_dealloc(
+    static_cast<SubHeapHandle*>(heap), ptr, alignment, size);
+}
+
+/**
+ * Destroy a sub-heap. All allocations must have been freed beforehand.
+ */
+extern "C" SNMALLOC_EXPORT void
+SNMALLOC_NAME_MANGLE(destroy_sub_heap)(void* heap)
+{
+  destroy_sub_heap(static_cast<SubHeapHandle*>(heap));
 }
