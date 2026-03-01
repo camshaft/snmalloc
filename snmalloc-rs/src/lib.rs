@@ -265,6 +265,9 @@ unsafe impl GlobalAlloc for SubHeap {
     /// On failure returns a null pointer; the original pointer is *not*
     /// freed (matching the `GlobalAlloc::realloc` contract).
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: `GlobalAlloc::realloc` requires callers to ensure `new_size`
+        // forms a valid `Layout` with the existing alignment.  We assert that
+        // contract here and propagate it to `from_size_align_unchecked`.
         let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
         let new_ptr = GlobalAlloc::alloc(self, new_layout);
         if !new_ptr.is_null() {

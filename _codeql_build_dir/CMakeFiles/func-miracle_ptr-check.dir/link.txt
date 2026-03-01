@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/func-miracle_ptr-check.dir/link.d "CMakeFiles/func-miracle_ptr-check.dir/src/test/func/miracle_ptr/miracle_ptr.cc.o" -o func-miracle_ptr-check  -latomic

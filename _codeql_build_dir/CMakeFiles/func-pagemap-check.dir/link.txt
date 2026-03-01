@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/func-pagemap-check.dir/link.d "CMakeFiles/func-pagemap-check.dir/src/test/func/pagemap/pagemap.cc.o" -o func-pagemap-check  -latomic

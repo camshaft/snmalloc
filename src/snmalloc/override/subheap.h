@@ -43,7 +43,13 @@ namespace snmalloc
     size_t limit;
 
     /**
-     * Current number of bytes live in this sub-heap. Updated atomically.
+     * Current number of bytes live in this sub-heap.
+     *
+     * Must only be accessed through the atomic load/store/CAS/fetch_sub
+     * operations provided by stl::Atomic. Direct reads or writes are
+     * undefined behaviour. Callers must not assume any particular ordering
+     * without going through the helpers in sub_heap_internal::claim_budget
+     * and the fetch_sub calls in sub_heap_alloc / sub_heap_dealloc.
      */
     stl::Atomic<size_t> in_use;
   };
@@ -72,6 +78,10 @@ namespace snmalloc
      * Try to claim `needed` bytes from the budget. Returns true on success.
      * Uses an optimistic compare-exchange loop so that concurrent allocations
      * are all serialised through the atomic without a lock.
+     *
+     * The check `needed > heap->limit - old` is used (rather than
+     * `old + needed > heap->limit`) to avoid unsigned integer overflow when
+     * both `old` and `needed` are large.
      */
     SNMALLOC_FAST_PATH_INLINE bool
     claim_budget(SubHeapHandle* heap, size_t needed)
@@ -79,7 +89,7 @@ namespace snmalloc
       size_t old = heap->in_use.load(stl::memory_order_relaxed);
       while (true)
       {
-        if (old + needed > heap->limit)
+        if (needed > heap->limit - old)
           return false;
         if (heap->in_use.compare_exchange_weak(
               old,

@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/perf-post_teardown-check.dir/link.d "CMakeFiles/perf-post_teardown-check.dir/src/test/perf/post_teardown/post-teardown.cc.o" -o perf-post_teardown-check  -latomic

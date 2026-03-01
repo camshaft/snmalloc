@@ -133,6 +133,21 @@ static void test_zero_budget()
   std::cout << "  test_zero_budget passed\n";
 }
 
+static void test_large_request_rejected()
+{
+  // A request for SIZE_MAX bytes must be rejected cleanly (no integer
+  // overflow in the budget check).
+  constexpr size_t limit = 256;
+  auto* heap = create_sub_heap(limit);
+  SNMALLOC_CHECK(heap != nullptr);
+
+  void* p = sub_heap_alloc(heap, 1, SIZE_MAX);
+  SNMALLOC_CHECK(p == nullptr);
+
+  destroy_sub_heap(heap);
+  std::cout << "  test_large_request_rejected passed\n";
+}
+
 int main()
 {
   setup();
@@ -141,6 +156,7 @@ int main()
   test_zeroed_alloc();
   test_two_heaps_independent();
   test_zero_budget();
+  test_large_request_rejected();
   std::cout << "all sub_heap tests passed\n";
   return 0;
 }

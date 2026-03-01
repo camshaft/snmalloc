@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/perf-lotsofthreads-fast.dir/link.d "CMakeFiles/perf-lotsofthreads-fast.dir/src/test/perf/lotsofthreads/lotsofthread.cc.o" -o perf-lotsofthreads-fast  -latomic

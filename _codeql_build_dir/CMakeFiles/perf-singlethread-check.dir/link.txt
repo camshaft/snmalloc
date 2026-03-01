@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/perf-singlethread-check.dir/link.d "CMakeFiles/perf-singlethread-check.dir/src/test/perf/singlethread/singlethread.cc.o" -o perf-singlethread-check  -latomic

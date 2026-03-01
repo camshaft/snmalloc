@@ -1,0 +1,1 @@
+/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/perf-large_alloc-fast.dir/link.d "CMakeFiles/perf-large_alloc-fast.dir/src/test/perf/large_alloc/large_alloc.cc.o" -o perf-large_alloc-fast  -latomic
