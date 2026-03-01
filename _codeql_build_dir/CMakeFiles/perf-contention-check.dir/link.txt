@@ -1,1 +1,0 @@
-/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/perf-contention-check.dir/link.d "CMakeFiles/perf-contention-check.dir/src/test/perf/contention/contention.cc.o" -o perf-contention-check  -latomic

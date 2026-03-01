@@ -1,1 +1,0 @@
-/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/func-seqset-fast.dir/link.d "CMakeFiles/func-seqset-fast.dir/src/test/func/seqset/seqset.cc.o" -o func-seqset-fast  -latomic

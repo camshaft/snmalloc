@@ -1,1 +1,0 @@
-/tmp/codeql-scratch-42421b51d372e5d9/dbs/cpp/working/autobuild/bin/c++ -O3 -DNDEBUG -Wl,--no-undefined -Wl,--dependency-file=CMakeFiles/func-sizeclass-fast.dir/link.d "CMakeFiles/func-sizeclass-fast.dir/src/test/func/sizeclass/sizeclass.cc.o" -o func-sizeclass-fast  -latomic
