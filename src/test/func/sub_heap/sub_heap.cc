@@ -58,8 +58,9 @@ static void test_region_exhausts()
 
 static void test_free_list_reuse()
 {
-  // Verify that freed objects are reused from the allocator's free list.
-  // This tests the snmalloc fast path (thread-local free list, no atomics).
+  // Verify that freed objects can be reallocated immediately. snmalloc returns
+  // objects to its thread-local slab free list on dealloc, so a subsequent
+  // alloc of the same size class does not need to go to the backend.
   constexpr size_t region = bits::one_at_bit(25);
   auto* heap = create_sub_heap(region);
   SNMALLOC_CHECK(heap != nullptr);

@@ -37,21 +37,14 @@ namespace snmalloc
      * Using it as the PAL parameter of FixedRangeConfig creates a separate
      * template instantiation — and therefore separate static state — for each
      * slot.  All actual PAL operations are inherited from DefaultPal.
+     *
+     * Note: the static state of FixedRangeConfig (pagemap, allocator pool,
+     * global range) is per-type — i.e. per-N — not per-instance. That is why
+     * the number of slots must be fixed at compile time.
      */
     template<size_t N>
     struct SubHeapPAL : DefaultPal
     {};
-
-    /** Type-erased dispatch table for sub-heap operations. */
-    struct SubHeapOps
-    {
-      void* (*alloc_fn)(void*, size_t);
-      void* (*alloc_zeroed_fn)(void*, size_t);
-      void (*dealloc_fn)(void*, void*);
-      void (*release_fn)(void*);
-    };
-
-    using TryCreateFn = void* (*)(size_t);
 
     /**
      * Per-slot state and operations for slot N.
@@ -69,6 +62,10 @@ namespace snmalloc
       /**
        * Guards one-time initialisation of this slot. Once set to true, the
        * slot is claimed for the lifetime of the process.
+       *
+       * Slots are one-shot: the static pagemap and allocator-pool state of
+       * FixedRangeConfig cannot be safely reset or re-initialised, so a slot
+       * that has been released cannot be reclaimed for a new sub-heap.
        */
       SNMALLOC_REQUIRE_CONSTINIT
       inline static stl::Atomic<bool> claimed{false};
@@ -94,9 +91,6 @@ namespace snmalloc
         alloc->flush();
         AllocPool<Config>::release(alloc);
       }
-
-      static constexpr SubHeapOps ops{
-        do_alloc, do_alloc_zeroed, do_dealloc, do_release};
 
       /**
        * Attempt to claim this slot, reserve `size` bytes of virtual address
@@ -127,30 +121,90 @@ namespace snmalloc
     };
 
     // -----------------------------------------------------------------------
-    // Compile-time slot table: maps index -> ops* and index -> try_create*
+    // Slot dispatch: recursive if-constexpr chains select the right Slot<N>
+    // static method based on a runtime slot index, without a vtable.
+    // The compiler reduces these chains to a jump table for small N.
     // -----------------------------------------------------------------------
 
-    template<size_t... Ns>
-    struct SlotTable
+    template<size_t N = 0>
+    SNMALLOC_FAST_PATH_INLINE void*
+    dispatch_alloc(size_t slot, void* a, size_t needed)
     {
-      static constexpr SubHeapOps const* ops[sizeof...(Ns)] = {
-        &Slot<Ns>::ops...};
-      static constexpr TryCreateFn creators[sizeof...(Ns)] = {
-        Slot<Ns>::try_create...};
-    };
+      if constexpr (N < SNMALLOC_MAX_SUB_HEAPS)
+      {
+        if (slot == N)
+          return Slot<N>::do_alloc(a, needed);
+        return dispatch_alloc<N + 1>(slot, a, needed);
+      }
+      SNMALLOC_ASSERT(false);
+      return nullptr;
+    }
 
-    // Builds SlotTable<0, 1, ..., N-1> via recursive template expansion.
-    template<size_t N, size_t... Rest>
-    struct MakeSlotTable : MakeSlotTable<N - 1, N - 1, Rest...>
-    {};
-
-    template<size_t... Rest>
-    struct MakeSlotTable<0, Rest...>
+    template<size_t N = 0>
+    SNMALLOC_FAST_PATH_INLINE void*
+    dispatch_alloc_zeroed(size_t slot, void* a, size_t needed)
     {
-      using Type = SlotTable<Rest...>;
-    };
+      if constexpr (N < SNMALLOC_MAX_SUB_HEAPS)
+      {
+        if (slot == N)
+          return Slot<N>::do_alloc_zeroed(a, needed);
+        return dispatch_alloc_zeroed<N + 1>(slot, a, needed);
+      }
+      SNMALLOC_ASSERT(false);
+      return nullptr;
+    }
 
-    using Table = MakeSlotTable<SNMALLOC_MAX_SUB_HEAPS>::Type;
+    template<size_t N = 0>
+    SNMALLOC_FAST_PATH_INLINE void
+    dispatch_dealloc(size_t slot, void* a, void* ptr)
+    {
+      if constexpr (N < SNMALLOC_MAX_SUB_HEAPS)
+      {
+        if (slot == N)
+        {
+          Slot<N>::do_dealloc(a, ptr);
+          return;
+        }
+        dispatch_dealloc<N + 1>(slot, a, ptr);
+      }
+      SNMALLOC_ASSERT(false);
+    }
+
+    template<size_t N = 0>
+    void dispatch_release(size_t slot, void* a)
+    {
+      if constexpr (N < SNMALLOC_MAX_SUB_HEAPS)
+      {
+        if (slot == N)
+        {
+          Slot<N>::do_release(a);
+          return;
+        }
+        dispatch_release<N + 1>(slot, a);
+      }
+      SNMALLOC_ASSERT(false);
+    }
+
+    /**
+     * Walk slots 0..SNMALLOC_MAX_SUB_HEAPS-1 looking for an unclaimed one.
+     * On success, sets out_slot to the claimed index and returns the acquired
+     * Allocator pointer; returns nullptr if all slots are taken.
+     */
+    template<size_t N = 0>
+    void* find_and_create(size_t size, size_t& out_slot)
+    {
+      if constexpr (N < SNMALLOC_MAX_SUB_HEAPS)
+      {
+        void* a = Slot<N>::try_create(size);
+        if (a != nullptr)
+        {
+          out_slot = N;
+          return a;
+        }
+        return find_and_create<N + 1>(size, out_slot);
+      }
+      return nullptr; // all slots exhausted
+    }
 
   } // namespace subheap_detail
 
@@ -159,12 +213,11 @@ namespace snmalloc
    */
   struct SubHeapHandle
   {
-    /** Type-erased pointer to the Allocator<FixedRangeConfig<SubHeapPAL<N>>>
-     * for the slot that backs this handle. */
+    /** Pointer to the Allocator<FixedRangeConfig<SubHeapPAL<slot>>>. */
     void* alloc_ptr;
 
-    /** Dispatch table for the correct slot instantiation. */
-    const subheap_detail::SubHeapOps* ops;
+    /** Index of the slot backing this handle (0..SNMALLOC_MAX_SUB_HEAPS-1). */
+    size_t slot;
   };
 
   /**
@@ -187,24 +240,19 @@ namespace snmalloc
     if (size < MIN_CHUNK_SIZE)
       return nullptr;
 
-    using T = subheap_detail::Table;
-    for (size_t i = 0; i < SNMALLOC_MAX_SUB_HEAPS; ++i)
-    {
-      void* a = T::creators[i](size);
-      if (a == nullptr)
-        continue; // slot already claimed or reservation failed; try next
+    size_t slot = SNMALLOC_MAX_SUB_HEAPS; // sentinel: "not yet assigned"
+    void* a = subheap_detail::find_and_create(size, slot);
+    if (a == nullptr)
+      return nullptr; // all slots exhausted or reservation failed
 
-      // Allocate the handle from the global heap (not from the sub-heap).
-      void* p = snmalloc::alloc(sizeof(SubHeapHandle));
-      if (p == nullptr)
-      {
-        T::ops[i]->release_fn(a);
-        return nullptr;
-      }
-      auto* h = new (p, placement_token) SubHeapHandle{a, T::ops[i]};
-      return h;
+    // Allocate the handle from the global heap (not from the sub-heap).
+    void* p = snmalloc::alloc(sizeof(SubHeapHandle));
+    if (p == nullptr)
+    {
+      subheap_detail::dispatch_release(slot, a);
+      return nullptr;
     }
-    return nullptr; // all slots exhausted
+    return new (p, placement_token) SubHeapHandle{a, slot};
   }
 
   /**
@@ -216,7 +264,8 @@ namespace snmalloc
   SNMALLOC_FAST_PATH_INLINE void*
   sub_heap_alloc(SubHeapHandle* heap, size_t alignment, size_t size)
   {
-    return heap->ops->alloc_fn(heap->alloc_ptr, aligned_size(alignment, size));
+    return subheap_detail::dispatch_alloc(
+      heap->slot, heap->alloc_ptr, aligned_size(alignment, size));
   }
 
   /**
@@ -227,8 +276,8 @@ namespace snmalloc
   SNMALLOC_FAST_PATH_INLINE void*
   sub_heap_alloc_zeroed(SubHeapHandle* heap, size_t alignment, size_t size)
   {
-    return heap->ops->alloc_zeroed_fn(
-      heap->alloc_ptr, aligned_size(alignment, size));
+    return subheap_detail::dispatch_alloc_zeroed(
+      heap->slot, heap->alloc_ptr, aligned_size(alignment, size));
   }
 
   /**
@@ -242,7 +291,7 @@ namespace snmalloc
   {
     UNUSED(alignment);
     UNUSED(size);
-    heap->ops->dealloc_fn(heap->alloc_ptr, ptr);
+    subheap_detail::dispatch_dealloc(heap->slot, heap->alloc_ptr, ptr);
   }
 
   /**
@@ -257,7 +306,7 @@ namespace snmalloc
    */
   inline void destroy_sub_heap(SubHeapHandle* heap)
   {
-    heap->ops->release_fn(heap->alloc_ptr);
+    subheap_detail::dispatch_release(heap->slot, heap->alloc_ptr);
     snmalloc::dealloc(heap, sizeof(SubHeapHandle));
   }
 
