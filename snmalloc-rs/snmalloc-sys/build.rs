@@ -630,6 +630,9 @@ fn main() {
     // Apply all configurations
     configure_platform(&mut config);
 
+    // Rebuild whenever any snmalloc C++ source or header changes.
+    println!("cargo:rerun-if-changed=snmalloc/src");
+
     // Build and configure output
     println!("cargo:rustc-link-search=/usr/local/lib");
     println!("cargo:rustc-link-search={}", config.out_dir);

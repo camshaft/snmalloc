@@ -18,6 +18,13 @@ members = ["snmalloc-sys", "xtask"]
 [dependencies]
 snmalloc-sys = { version = "0.7.4", path = "snmalloc-sys", default-features = false }
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "sub_heap"
+harness = false
+
 [features]
 default = ["snmalloc-sys/build_cmake", "snmalloc-sys/usewait-on-address"]
 build_cc = ["snmalloc-sys/build_cc"]
