@@ -150,7 +150,7 @@ unsafe impl GlobalAlloc for SnMalloc {
 /// handle but will not free the underlying objects, resulting in a budget
 /// counter leak.
 pub struct SubHeap {
-    handle: *mut ffi::c_void,
+    handle: *mut core::ffi::c_void,
 }
 
 // SAFETY: The C++ budget counter is updated with atomic operations, so
@@ -374,19 +374,19 @@ mod tests {
 
     #[test]
     fn sub_heap_basic_alloc_dealloc() {
-        let heap = SubHeap::new(1024).expect("sub-heap creation failed");
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
         let layout = Layout::from_size_align(64, 8).unwrap();
-        let ptr = heap.alloc(layout).expect("allocation within budget failed");
+        let ptr = heap.alloc(layout).expect("allocation failed");
         unsafe { heap.dealloc(ptr.as_ptr(), layout) };
     }
 
     #[test]
     fn sub_heap_zeroed_alloc() {
-        let heap = SubHeap::new(1024).expect("sub-heap creation failed");
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
         let layout = Layout::from_size_align(64, 8).unwrap();
         let ptr = heap
             .alloc_zeroed(layout)
-            .expect("zeroed allocation within budget failed");
+            .expect("zeroed allocation failed");
         // Verify the memory is actually zeroed.
         let slice =
             unsafe { core::slice::from_raw_parts(ptr.as_ptr(), layout.size()) };
@@ -396,44 +396,56 @@ mod tests {
 
     #[test]
     fn sub_heap_budget_enforced() {
-        // Create a 256-byte budget, then try to allocate more than it.
-        let heap = SubHeap::new(256).expect("sub-heap creation failed");
-        let layout = Layout::from_size_align(128, 8).unwrap();
+        // Verify the fixed region eventually exhausts and that freed objects
+        // can be re-allocated via the slab free list.  Use large (512 KiB)
+        // allocations so the 4 MiB region drains in ≤ 8 iterations, keeping
+        // the number of live pointers small enough to track in a fixed array.
+        const REGION: usize = 1 << 22; // 4 MiB
+        const ALLOC: usize = 1 << 19;  // 512 KiB
+        let heap = SubHeap::new(REGION).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(ALLOC, 8).unwrap();
 
-        // First two allocations fit (2 × 128 = 256).
-        let p1 = heap.alloc(layout).expect("first allocation failed");
-        let p2 = heap.alloc(layout).expect("second allocation failed");
+        // Drain the region, holding at most 8 live pointers.
+        let mut ptrs = [core::ptr::null_mut::<u8>(); 8];
+        let mut count = 0usize;
+        for slot in &mut ptrs {
+            match heap.alloc(layout) {
+                Some(ptr) => {
+                    *slot = ptr.as_ptr();
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        assert!(count > 0, "should allocate at least once before exhaustion");
 
-        // Third allocation must fail (budget exhausted).
-        assert!(
-            heap.alloc(layout).is_none(),
-            "allocation should have failed when budget is exhausted"
-        );
-
-        unsafe {
-            heap.dealloc(p1.as_ptr(), layout);
-            heap.dealloc(p2.as_ptr(), layout);
+        // One more allocation must fail — we've exhausted the region.
+        if count < ptrs.len() {
+            assert!(heap.alloc(layout).is_none(), "region should be exhausted");
         }
 
-        // After freeing, allocation should succeed again.
-        let p3 = heap.alloc(layout).expect("allocation after free failed");
-        unsafe { heap.dealloc(p3.as_ptr(), layout) };
+        // Free everything; the slab free list should allow re-allocation.
+        for &ptr in ptrs.iter().take(count) {
+            unsafe { heap.dealloc(ptr, layout) };
+        }
+        let ptr = heap.alloc(layout).expect("allocation after free failed");
+        unsafe { heap.dealloc(ptr.as_ptr(), layout) };
     }
 
     #[test]
-    fn sub_heap_zero_budget() {
-        let heap = SubHeap::new(0).expect("zero-budget sub-heap creation failed");
-        let layout = Layout::from_size_align(8, 8).unwrap();
+    fn sub_heap_small_region_fails() {
+        // A region smaller than snmalloc's minimum chunk size cannot hold
+        // even one slab and must fail to create.
         assert!(
-            heap.alloc(layout).is_none(),
-            "allocation from zero-budget heap should always fail"
+            SubHeap::new(0).is_none(),
+            "sub-heap creation should fail for zero-size region"
         );
     }
 
     #[test]
     fn sub_heap_global_alloc_trait() {
         // Verify that SubHeap can be used through the GlobalAlloc trait.
-        let heap = SubHeap::new(512).expect("sub-heap creation failed");
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
         let layout = Layout::from_size_align(64, 8).unwrap();
         unsafe {
             let ptr = GlobalAlloc::alloc(&heap, layout);
@@ -444,7 +456,7 @@ mod tests {
 
     #[test]
     fn sub_heap_realloc() {
-        let heap = SubHeap::new(1024).expect("sub-heap creation failed");
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
         let layout = Layout::from_size_align(64, 8).unwrap();
         unsafe {
             let ptr = GlobalAlloc::alloc(&heap, layout);

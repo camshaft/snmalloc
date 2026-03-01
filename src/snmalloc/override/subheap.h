@@ -165,7 +165,7 @@ namespace snmalloc
           Slot<N>::do_dealloc(a, ptr);
           return;
         }
-        dispatch_dealloc<N + 1>(slot, a, ptr);
+        return dispatch_dealloc<N + 1>(slot, a, ptr);
       }
       SNMALLOC_ASSERT(false);
     }
@@ -180,7 +180,7 @@ namespace snmalloc
           Slot<N>::do_release(a);
           return;
         }
-        dispatch_release<N + 1>(slot, a);
+        return dispatch_release<N + 1>(slot, a);
       }
       SNMALLOC_ASSERT(false);
     }
