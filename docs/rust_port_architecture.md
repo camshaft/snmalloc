@@ -72,18 +72,28 @@ the granularity of the smallest size classes and is always a power of two.
 `MIN_ALLOC_SIZE` (also 16 bytes) is the minimum allocation size that the
 allocator honours; requests smaller than this are rounded up silently.
 
-`MIN_CHUNK_BITS` (default 14, so `MIN_CHUNK_SIZE` = 16 KiB) is the base-2
-logarithm of the smallest unit of address space that snmalloc ever carves from
-the OS or assigns to a slab.  It is also the granularity of the pagemap.
+`MIN_CHUNK_BITS` is the base-2 logarithm of the smallest unit of address space
+that snmalloc ever carves from the OS or assigns to a slab.  It is also the
+granularity of the pagemap.  In the default configuration `MIN_CHUNK_BITS = 14`
+and so `MIN_CHUNK_SIZE = 16 KiB`.  When both `SNMALLOC_QEMU_WORKAROUND` and
+`SNMALLOC_VA_BITS_64` are enabled, `MIN_CHUNK_BITS = 17` and so
+`MIN_CHUNK_SIZE = 128 KiB`; the Rust port must mirror this conditional
+definition.
 
-`MAX_SMALL_SIZECLASS_BITS` (default 16) determines the largest size class
+`MAX_SMALL_SIZECLASS_BITS` (typically 16) determines the largest size class
 handled by the slab-based allocator.  Any allocation whose rounded-up size
 exceeds `2^MAX_SMALL_SIZECLASS_BITS` bytes is a "large" allocation and is
-handled by the backend directly rather than via slabs.
+handled by the backend directly rather than via slabs.  In the C++ allocator,
+builds with both `SNMALLOC_QEMU_WORKAROUND` and `SNMALLOC_VA_BITS_64` enabled
+instead use `MAX_SMALL_SIZECLASS_BITS = 19`; the Rust port should mirror this
+behaviour for those configurations.
 
-`MAX_CAPACITY_BITS` (default 11) is the number of bits required to represent the
-count of objects in the largest slab.  This constant is used to pack both a ring
-size and a pointer offset into a single pointer-sized word in remote messages.
+`MAX_CAPACITY_BITS` (typically 11) is the number of bits required to represent
+the count of objects in the largest slab.  Under the QEMU workaround
+configuration (`SNMALLOC_QEMU_WORKAROUND && SNMALLOC_VA_BITS_64`), it is
+instead set to 13.  This constant is used to pack both a ring size and a pointer
+offset into a single pointer-sized word in remote messages, and so its value
+directly affects the bit layout of those packed fields.
 
 `REMOTE_SLOT_BITS` (8) and `REMOTE_SLOTS` (256) define the hash table used by
 the remote deallocation cache to route messages to their destination allocators.
@@ -141,15 +151,30 @@ Sattolo's algorithm so that the allocation order is uniformly random.
 two per-slab queues, and always allocate from the longer one.  This preserves
 entropy as the allocator runs.
 
-`random_open_slab`: when a size class has only a single active slab with free
+`random_extra_slab`: when a size class has only a single active slab with free
 objects, randomly decide whether to use it or to open a new slab instead.  This
 prevents an adversary from predicting when a slab becomes exhausted.
+
+`reuse_LIFO`: reuse slabs with free elements in LIFO order rather than the
+default FIFO (queue-like) order.  This generally increases the time between
+address reuse.
+
+`sanity_checks`: perform inexpensive well-formedness tests on pointers passed to
+free (not interior, allocated address space, correct size if provided).
+
+`clear_meta`: erase intra-slab free list metadata before completing an allocation,
+mitigating information disclosure.
 
 `metadata_protection`: guard pagemap metadata with OS-level protections and store
 it in a dedicated address range.
 
+`pal_enforce_access`: request that the PAL enforce the using/not_using memory
+access model at the OS level (e.g. via `PROT_NONE` mappings).
+
 The combination `CHECK_CLIENT` (`SNMALLOC_CHECK_CLIENT` defined) enables all of
-the above simultaneously except `random_pagemap`.
+the above mitigations by default, including `random_pagemap`.  On some
+platforms (for example, OpenEnclave), `random_pagemap` is omitted from this
+combination.
 
 ---
 
@@ -197,18 +222,25 @@ On Windows it decommits the pages.  The allocator calls this when returning
 chunks to the backend.
 
 **`notify_using<zeroed>(ptr, size) -> bool`**: bring a range of pages back into
-use.  When `zeroed` is true the function may use OS-provided background zeroing
-(e.g. `mmap` with `MAP_POPULATE`) instead of explicit `memset`.  Returns true if
-the pages are already zeroed.
+use.  When `zeroed` is true the caller is requesting that the pages be observed
+as zero-initialised on next use; the implementation may rely on OS-provided
+background zeroing (e.g. `VirtualAlloc` commit, `mmap` with appropriate flags)
+or perform an explicit `memset` to uphold this.  The return value indicates
+success or failure of making the pages usable again (`true` on success,
+`false` on failure); it does not encode whether the pages were previously
+zeroed.  Implementations must ensure that, if they return `true` and `zeroed`
+is `true`, the allocator will only observe zero-filled bytes when it next
+accesses the range.
 
 **`zero<page_aligned>(ptr, size)`**: zero a range of memory.  When `page_aligned`
 is true the implementation may use OS page-level zeroing.
 
-**`reserve(size) -> ptr`** and **`reserve_aligned<size_t min_size>(size) -> ptr`**:
+**`reserve(size) -> ptr`** and **`reserve_aligned<state_using>(size) -> ptr`**:
 allocate virtual address space from the OS without necessarily committing it.
-`reserve_aligned` guarantees that the returned address is a multiple of
-`minimum_alloc_size`.  Platforms that cannot provide aligned reservation may
-omit the second method and instead use overallocation with interior alignment.
+`reserve_aligned` guarantees that the returned address satisfies the allocator's
+alignment requirements for large allocations.  Platforms that cannot provide
+aligned reservation may omit the second method and instead use overallocation
+with interior alignment.
 
 **`get_entropy64() -> u64`**: return 64 bits of high-quality randomness.  Used to
 seed the per-thread entropy source.  Provided only on platforms that expose
@@ -432,7 +464,10 @@ values, one per small size class.  This is the first thing checked on every
 small allocation.
 
 `alloc_classes[NUM_SMALL_SIZECLASSES]`: per-class metadata caches, each a
-`SeqSet<BackendSlabMetadata>` of slabs that have free objects.
+`SlabMetadataCache` struct containing `available` (a `SeqSet<BackendSlabMetadata>`
+of slabs that have free objects), `length` (total count of slabs in `available`),
+and `unused` (count of slabs whose `needed_` has reached zero and are ready for
+return to the backend).
 
 `laden`: a `SeqSet<BackendSlabMetadata>` of slabs that are too full to be
 allocated from (below the waking threshold).
@@ -461,11 +496,15 @@ initial free list and to accumulate freed objects during operation.  After the
 initial build, `close()` produces the `freelist::Iter` that is cached in
 `small_fast_free_lists`.
 
-`needed_` (u16): a countdown.  It starts at the slab capacity.  Each allocation
-decrements it; each deallocation increments it.  When it reaches zero after the
-initial construction, all objects are in use and the slab moves to `laden`.
-When it reaches the waking threshold after object returns, the slab wakes and is
-re-added to `alloc_classes`.
+`needed_` (u16): a countdown to the next slow-path state transition for this
+slab.  It is decremented on each deallocation (`return_object()`) and is not
+directly updated on the fast-path allocation.  When it reaches zero on a
+deallocation, the deallocation slow-path (`dealloc_local_object_slow` /
+`dealloc_local_object_meta`) runs: it inspects how many objects remain in the
+slab's freelist, may update `sleeping_` and move the slab between
+`alloc_classes` and `laden`, and then sets `needed_` to the number of further
+deallocations required before the next transition (or leaves it at zero if the
+slab should remain unused).
 
 `sleeping_` (bool): true when this slab has been moved to `laden` because too few
 objects are free.
@@ -490,8 +529,8 @@ The first word (`meta`) holds:
   allocation and must not be merged with the preceding chunk.
 
 The second word (`remote_and_sizeclass`) holds:
-- Bits `[N:8]`: a pointer to the owning thread's `RemoteAllocator` (128-byte
-  aligned, so bits 0–6 are free).
+- Bits `[N:8]`: a pointer to the owning thread's `RemoteAllocator` (`REMOTE_MIN_ALIGN`
+  = 256-byte aligned, so bits 0–7 are free in any valid pointer).
 - Bit 7 (`REMOTE_BACKEND_MARKER`): set when this chunk is owned by the backend
   rather than by a frontend allocator.  The rest of the word's interpretation
   changes completely when this bit is set.
@@ -543,14 +582,23 @@ the index.
 pointer matches the current thread's `remote_alloc`, the object is local.  The
 allocator calls the slab metadata's `free_queue.add(object)`, which appends the
 object to the appropriate list in the builder (with coin-flip randomisation if
-`random_preserve` is enabled).  It then decrements `needed_`; if `needed_`
-reaches zero the slab has become empty and can be returned to the backend.
+`random_preserve` is enabled).  It then decrements the per-slab `needed_`
+counter.  This counter is a countdown used to decide when to take the slow path
+(`FrontendSlabMetadata::return_object()`); when it reaches zero, the fast path
+hands control to the slow path to potentially change the slab's state or
+arrange for its eventual return to the backend.  Hitting zero does *not* by
+itself mean that the slab is empty.
 
-**Local deallocation, slow path** (`dealloc_local_object_slow`): invoked when
-`needed_` passes the waking threshold.  If the slab was sleeping, it is removed
-from `laden` and re-added to `alloc_classes[sc]`.  If the slab becomes
-completely empty and the class has surplus slabs, the empty slab is returned to
-the backend via `Backend::dealloc_chunk`.
+**Local deallocation, slow path** (`dealloc_local_object_slow`): runs when the
+`needed_` countdown for a slab hits zero and `return_object()` is invoked.  The
+slow path consults the slab's current state (active, sleeping, or unused),
+possibly moves it between `alloc_classes[sc]` and `laden`, and updates
+`needed_` to control when the next slow-path transition will occur.  If, in the
+course of this processing, the metadata shows that the slab is completely empty
+*and* the allocator already has sufficient slabs for that size class, the slab
+is returned to the backend via `Backend::dealloc_chunk`.  The decision to
+return a slab is thus based on explicit emptiness and surplus checks, not on
+`needed_` reaching zero.
 
 **Remote deallocation** (`dealloc_remote`): if the pagemap entry's
 `RemoteAllocator` pointer belongs to a different thread, the object is handed to
@@ -878,15 +926,15 @@ This section traces a single small allocation on an otherwise idle 64-bit Linux
 system, starting from `malloc(100)`.
 
 1. The C library wrapper rounds the request to the next size class (128 bytes,
-   `sizeclass = 6` in the default table) and calls `Allocator::alloc(128)`.
+   `sizeclass = 7` in the default table) and calls `Allocator::alloc(128)`.
 
 2. `alloc` calls `small_alloc<Uninit, CheckInit>(128)`, which reads
-   `small_fast_free_lists[6]`.  Since this is the first allocation, the iterator
+   `small_fast_free_lists[7]`.  Since this is the first allocation, the iterator
    is empty.
 
-3. `small_refill` examines `alloc_classes[6]`.  It is empty.
+3. `small_refill` examines `alloc_classes[7]`.  It is empty.
 
-4. `small_refill_slow` calls `Backend::alloc_chunk(local_state, 16384, 6)`.
+4. `small_refill_slow` calls `Backend::alloc_chunk(local_state, 16384, 7)`.
 
 5. `alloc_chunk` calls `local_state.get_meta_range().alloc_range(sizeof(FrontendSlabMetadata))`.
    The `SmallBuddyRange` is empty so it asks its parent `LargeObjectRange`
@@ -920,15 +968,15 @@ system, starting from `malloc(100)`.
 
 12. `alloc_chunk` writes `FrontendMetaEntry` values into the pagemap for the
     single `MIN_CHUNK_SIZE` block in this slab, recording `&thread_remote_alloc`
-    and `sizeclass = 6`.
+    and `sizeclass = 7`.
 
-13. Back in `small_refill_slow`, `FrontendSlabMetadata::initialise(6, slab, key)`
+13. Back in `small_refill_slow`, `FrontendSlabMetadata::initialise(7, slab, key)`
     is called.  This constructs a `freelist::Builder` over the 128 objects in
     the 16 KiB slab (16384 / 128 = 128 objects).  If `random_initial` is enabled,
     Sattolo's algorithm permutes the list.  `close()` seals the builder and
     returns an iterator.
 
-14. The iterator is stored in `small_fast_free_lists[6]`.
+14. The iterator is stored in `small_fast_free_lists[7]`.
 
 15. Back in `small_alloc`, `take(key, domesticate)` is called on the fresh
     iterator.  It decodes the first pointer, optionally verifies the backward
@@ -959,11 +1007,13 @@ belongs to a 128-byte small size class slab.
    which appends `p` to one of the builder's lists (coin-flip selects which one
    if `random_preserve` is enabled).
 
-5. `meta->return_object()` decrements `needed_` and checks whether it has
-   crossed the waking threshold.  If the slab was sleeping and now has enough
-   free objects, `dealloc_local_object_slow` re-adds it to `alloc_classes[6]`.
-   If `needed_` reaches the capacity (all objects free) and the class has
-   surplus slabs, the slab is returned to `Backend::dealloc_chunk`.
+5. `meta->return_object()` decrements `needed_` and returns `true` if it
+   reaches zero, triggering `dealloc_local_object_slow`.  The slow path
+   inspects `sleeping_`: if the slab was sleeping, `set_not_sleeping` resets
+   `needed_` and re-adds the slab to `alloc_classes[7].available`; if the slab
+   was not sleeping, its `unused` counter for size class 7 is incremented and,
+   if there are now too many unused slabs (more than 2 and more than one quarter
+   of the total), some are returned to the backend via `Backend::dealloc_chunk`.
 
 ---
 
