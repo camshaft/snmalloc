@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "snmalloc-pal",
+    "snmalloc-aal",
+    "snmalloc-core",
+    "snmalloc-backend",
+    "snmalloc-frontend",
+    "snmalloc",
+    "snmalloc-test",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/microsoft/snmalloc"
+
+# Declare cfg flags used across the workspace so rustc doesn't warn about them.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+# Shared dependency versions used across the workspace.
+[workspace.dependencies]
+snmalloc-pal      = { path = "snmalloc-pal",      version = "0.1.0" }
+snmalloc-aal      = { path = "snmalloc-aal",      version = "0.1.0" }
+snmalloc-core     = { path = "snmalloc-core",     version = "0.1.0" }
+snmalloc-backend  = { path = "snmalloc-backend",  version = "0.1.0" }
+snmalloc-frontend = { path = "snmalloc-frontend", version = "0.1.0" }
+snmalloc          = { path = "snmalloc",          version = "0.1.0" }
+bolero            = { version = "0.13" }
+loom              = { version = "0.7" }

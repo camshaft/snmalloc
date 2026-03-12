@@ -1,0 +1,16 @@
+[package]
+name = "snmalloc-test"
+description = "Integration tests and fuzz targets for the snmalloc Rust port."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+snmalloc = { workspace = true }
+
+[dev-dependencies]
+# bolero provides unified property-based testing and fuzzing.
+# Targets in tests/ run as ordinary cargo tests by default; invoke
+# `cargo bolero test <target>` to run them as a continuous fuzzer.
+bolero = { workspace = true }

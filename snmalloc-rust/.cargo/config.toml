@@ -1,0 +1,35 @@
+# Cargo configuration for the snmalloc-rust workspace.
+
+# ── Miri ─────────────────────────────────────────────────────────────────────
+#
+# Run the test suite under Miri (requires nightly):
+#
+#   cargo miri test [-p <crate>]
+#
+# Recommended Miri flags (pass via MIRIFLAGS environment variable):
+#
+#   MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check"
+#
+#   -Zmiri-strict-provenance  — reject pointer-integer casts that lose
+#                               provenance, mirroring the strict-provenance
+#                               model we target (see docs/StrictProvenance.md).
+#   -Zmiri-symbolic-alignment-check — catch under-aligned pointer uses that
+#                                     the hardware would silently accept.
+
+# ── Aliases ───────────────────────────────────────────────────────────────────
+
+[alias]
+# Run the full test suite under Miri (nightly required):
+#   cargo miri-test
+miri-test = "miri test"
+
+# ── Loom ─────────────────────────────────────────────────────────────────────
+#
+# Loom model tests are activated by compiling with --cfg loom:
+#
+#   RUSTFLAGS="--cfg loom" cargo test -p snmalloc-core
+#   RUSTFLAGS="--cfg loom" cargo test -p snmalloc-backend
+#   RUSTFLAGS="--cfg loom" cargo test -p snmalloc-frontend
+#
+# All modules that use atomics import them from snmalloc_core::atomics, which
+# resolves to loom::sync::atomic under --cfg loom.
