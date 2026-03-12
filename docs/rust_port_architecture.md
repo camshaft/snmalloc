@@ -155,8 +155,9 @@ entropy as the allocator runs.
 objects, randomly decide whether to use it or to open a new slab instead.  This
 prevents an adversary from predicting when a slab becomes exhausted.
 
-`reuse_LIFO`: use a LIFO queue, rather than a stack, of slabs with free elements.
-This generally increases the time between address reuse.
+`reuse_LIFO`: reuse slabs with free elements in LIFO order rather than the
+default FIFO (queue-like) order.  This generally increases the time between
+address reuse.
 
 `sanity_checks`: perform inexpensive well-formedness tests on pointers passed to
 free (not interior, allocated address space, correct size if provided).
@@ -463,7 +464,10 @@ values, one per small size class.  This is the first thing checked on every
 small allocation.
 
 `alloc_classes[NUM_SMALL_SIZECLASSES]`: per-class metadata caches, each a
-`SeqSet<BackendSlabMetadata>` of slabs that have free objects.
+`SlabMetadataCache` struct containing `available` (a `SeqSet<BackendSlabMetadata>`
+of slabs that have free objects), `length` (total count of slabs in `available`),
+and `unused` (count of slabs whose `needed_` has reached zero and are ready for
+return to the backend).
 
 `laden`: a `SeqSet<BackendSlabMetadata>` of slabs that are too full to be
 allocated from (below the waking threshold).
@@ -494,11 +498,13 @@ initial build, `close()` produces the `freelist::Iter` that is cached in
 
 `needed_` (u16): a countdown to the next slow-path state transition for this
 slab.  It is decremented on each deallocation (`return_object()`) and is not
-directly updated on the fast-path allocation.  When it reaches zero, the
-slow-path (`set_sleeping(...)`) runs: it inspects how many objects remain in
-the slab's freelist, updates `sleeping_`, may move the slab between
-`alloc_classes` and `laden`, and resets `needed_` to the number of further
-deallocations required before the next transition.
+directly updated on the fast-path allocation.  When it reaches zero on a
+deallocation, the deallocation slow-path (`dealloc_local_object_slow` /
+`dealloc_local_object_meta`) runs: it inspects how many objects remain in the
+slab's freelist, may update `sleeping_` and move the slab between
+`alloc_classes` and `laden`, and then sets `needed_` to the number of further
+deallocations required before the next transition (or leaves it at zero if the
+slab should remain unused).
 
 `sleeping_` (bool): true when this slab has been moved to `laden` because too few
 objects are free.
@@ -523,8 +529,8 @@ The first word (`meta`) holds:
   allocation and must not be merged with the preceding chunk.
 
 The second word (`remote_and_sizeclass`) holds:
-- Bits `[N:8]`: a pointer to the owning thread's `RemoteAllocator` (128-byte
-  aligned, so bits 0–6 are free).
+- Bits `[N:8]`: a pointer to the owning thread's `RemoteAllocator` (`REMOTE_MIN_ALIGN`
+  = 256-byte aligned, so bits 0–7 are free in any valid pointer).
 - Bit 7 (`REMOTE_BACKEND_MARKER`): set when this chunk is owned by the backend
   rather than by a frontend allocator.  The rest of the word's interpretation
   changes completely when this bit is set.
@@ -962,15 +968,15 @@ system, starting from `malloc(100)`.
 
 12. `alloc_chunk` writes `FrontendMetaEntry` values into the pagemap for the
     single `MIN_CHUNK_SIZE` block in this slab, recording `&thread_remote_alloc`
-    and `sizeclass = 6`.
+    and `sizeclass = 7`.
 
-13. Back in `small_refill_slow`, `FrontendSlabMetadata::initialise(6, slab, key)`
+13. Back in `small_refill_slow`, `FrontendSlabMetadata::initialise(7, slab, key)`
     is called.  This constructs a `freelist::Builder` over the 128 objects in
     the 16 KiB slab (16384 / 128 = 128 objects).  If `random_initial` is enabled,
     Sattolo's algorithm permutes the list.  `close()` seals the builder and
     returns an iterator.
 
-14. The iterator is stored in `small_fast_free_lists[6]`.
+14. The iterator is stored in `small_fast_free_lists[7]`.
 
 15. Back in `small_alloc`, `take(key, domesticate)` is called on the fresh
     iterator.  It decodes the first pointer, optionally verifies the backward
@@ -1001,11 +1007,13 @@ belongs to a 128-byte small size class slab.
    which appends `p` to one of the builder's lists (coin-flip selects which one
    if `random_preserve` is enabled).
 
-5. `meta->return_object()` decrements `needed_` and checks whether it has
-   crossed the waking threshold.  If the slab was sleeping and now has enough
-   free objects, `dealloc_local_object_slow` re-adds it to `alloc_classes[6]`.
-   If `needed_` reaches the capacity (all objects free) and the class has
-   surplus slabs, the slab is returned to `Backend::dealloc_chunk`.
+5. `meta->return_object()` decrements `needed_` and returns `true` if it
+   reaches zero, triggering `dealloc_local_object_slow`.  The slow path
+   inspects `sleeping_`: if the slab was sleeping, `set_not_sleeping` resets
+   `needed_` and re-adds the slab to `alloc_classes[7].available`; if the slab
+   was not sleeping, its `unused` counter for size class 7 is incremented and,
+   if there are now too many unused slabs (more than 2 and more than one quarter
+   of the total), some are returned to the backend via `Backend::dealloc_chunk`.
 
 ---
 
