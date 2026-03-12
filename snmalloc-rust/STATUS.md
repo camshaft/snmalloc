@@ -204,13 +204,12 @@ RUSTFLAGS="--cfg loom" cargo test -p snmalloc-frontend
 [Miri](https://github.com/rust-lang/miri) is Rust's experimental interpreter
 that detects memory errors, dangling pointers, and provenance violations.
 
-The workspace `.cargo/config.toml` sets `-Zmiri-strict-provenance` and
-`-Zmiri-symbolic-alignment-check` by default.
-
-**Run the test suite under Miri (nightly required):**
+The workspace `.cargo/config.toml` documents the recommended Miri flags;
+pass them explicitly via `MIRIFLAGS` when invoking Miri:
 
 ```sh
-cargo miri test [-p <crate>]
+MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check" \
+  cargo miri test [-p <crate>]
 ```
 
 **Or use the workspace alias:**

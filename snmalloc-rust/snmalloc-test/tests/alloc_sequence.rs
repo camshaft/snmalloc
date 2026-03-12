@@ -30,9 +30,11 @@
 enum AllocOp {
     /// Allocate `size` bytes with `align`-byte alignment.
     Alloc {
-        /// Requested size in bytes.  Clamped to [1, 1 << 20] in the test.
+        /// Requested size in bytes (1 to 65535).
+        #[generator(1u16..)]
         size: u16,
-        /// Log2 of the alignment.  Clamped to [0, 6] (1–64 bytes).
+        /// Log2 of the alignment (0 to 6 → 1 to 64 bytes).
+        #[generator(0u8..=6u8)]
         align_log2: u8,
     },
     /// Deallocate the allocation at the given index (if live).
@@ -44,7 +46,8 @@ enum AllocOp {
     Realloc {
         /// Index into the live-allocation table.
         index: u8,
-        /// New size in bytes.  Clamped to [1, 1 << 20].
+        /// New size in bytes (1 to 65535).
+        #[generator(1u16..)]
         new_size: u16,
     },
 }
