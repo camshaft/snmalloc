@@ -9,6 +9,13 @@ repository.workspace = true
 [lints]
 workspace = true
 
+# Enable all security mitigations (equivalent to SNMALLOC_CHECK_CLIENT in C++).
+# When this feature is off, all mitigations are disabled.
+# Platform-specific variants (CHERI, NetBSD, OpenEnclave) are not yet implemented;
+# they will be added as separate cfg conditions once those PAL implementations land.
+[features]
+check_client = []
+
 [dependencies]
 snmalloc-pal = { workspace = true }
 snmalloc-aal = { workspace = true }

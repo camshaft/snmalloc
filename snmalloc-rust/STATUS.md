@@ -42,14 +42,18 @@ Progress is tracked against the sections of the architecture reference.
 ### §2 — Configuration constants (`snmalloc-core::config`)
 
 - [x] Constants defined as `const` items matching `ds/allocconfig.h`
+- [x] `MIN_OBJECT_COUNT` derived from active mitigations
 - [ ] Const-generic `Config` type with all tuning knobs
 - [ ] `no_std` compile check
 
 ### §3 — Mitigation flags (`snmalloc-core::mitigations`)
 
-- [ ] `Mitigations` bitmask type
-- [ ] `CHECK_CLIENT` preset
-- [ ] Compile-time conditional code paths for each mitigation
+- [x] `Mitigations` bitmask type
+- [x] `CHECK_CLIENT` preset (`check_client` cargo feature → `FULL_CHECKS`, off → `NO_CHECKS`)
+- [x] All 14 named mitigation constants matching `ds_core/mitigations.h`
+- [x] `FULL_CHECKS` and `NO_CHECKS` aggregate constants
+- [x] `MITIGATIONS` global constant (compile-time constant for the active set)
+- [ ] Platform-specific presets (CHERI, NetBSD, OpenEnclave) — deferred until those PAL/AAL crates land
 
 ### §4 — Architecture Abstraction Layer (`snmalloc-aal`)
 
@@ -70,8 +74,15 @@ Progress is tracked against the sections of the architecture reference.
 
 ### §6 — Pointer provenance model (`snmalloc-core::ptrwrap`)
 
-- [ ] `CapPtr<T, B>` wrapper with provenance bound type parameters
-- [ ] `capptr_reveal` / `capptr_domesticate` operations
+- [x] `CapPtr<T, B>` wrapper with provenance bound type parameters
+- [x] Concrete bound types: `Arena`, `Chunk`, `ChunkUser`, `AllocFull`, `Alloc`, `AllocWild`
+- [x] `IsBound` sealed trait with dimension constants (`Spatial`, `AddressSpaceControl`, `Wildness`)
+- [x] Core methods: `null`, `unsafe_from`, `unsafe_ptr`, `unsafe_uintptr`, `as_void`, `as_static`, `as_reinterpret`, `with_bounds`, `is_null`
+- [x] Comparison operators (`PartialEq`, `Eq`, `PartialOrd`, `Ord`)
+- [x] `Default` impl (returns null)
+- [x] `capptr_reveal` / `capptr_from_client` / `capptr_rewild` / `capptr_chunk_is_alloc`
+- [x] `AtomicCapPtr<T, B>` with `load` / `store` / `exchange` (uses `crate::atomics::Ordering`)
+- [ ] `capptr_domesticate` — deferred until backend/pagemap is implemented
 - [ ] Miri `-Zmiri-strict-provenance` clean
 
 ### §7 — Size-class system (`snmalloc-core::sizeclasses`)
