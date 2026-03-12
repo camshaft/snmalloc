@@ -1,0 +1,10 @@
+[package]
+name = "snmalloc"
+description = "Pure-Rust port of the snmalloc high-performance allocator."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+snmalloc-frontend = { workspace = true }

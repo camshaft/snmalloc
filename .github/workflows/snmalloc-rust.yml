@@ -1,0 +1,125 @@
+name: snmalloc-rust CI
+
+concurrency:
+  group: ${{ github.ref }}-snmalloc-rust
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "snmalloc-rust/**"
+      - ".github/workflows/snmalloc-rust.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "snmalloc-rust/**"
+      - ".github/workflows/snmalloc-rust.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: ./snmalloc-rust
+
+jobs:
+  # ── Stable build and test ───────────────────────────────────────────────────
+  test:
+    name: "test (${{ matrix.os }}, ${{ matrix.rust }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Build
+        run: cargo build --all
+
+      - name: Test
+        run: cargo test --all
+
+  # ── Loom model tests ────────────────────────────────────────────────────────
+  #
+  # Run the loom-gated concurrent tests by compiling with --cfg loom.
+  # These tests are intentionally single-threaded from Cargo's perspective:
+  # loom spawns its own threads internally.
+  loom:
+    name: "loom (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run loom tests
+        env:
+          RUSTFLAGS: "--cfg loom"
+        run: cargo test -p snmalloc-core -p snmalloc-backend -p snmalloc-frontend
+
+  # ── Miri undefined-behaviour check ─────────────────────────────────────────
+  #
+  # Runs the test suite under Miri to catch dangling-pointer, provenance, and
+  # alignment violations in unsafe blocks.  Requires nightly.
+  miri:
+    name: "miri"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly + miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run Miri
+        env:
+          # Enforce strict provenance and symbolic alignment checking.
+          MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check"
+        run: cargo miri test --all
+
+  # ── Formatting ─────────────────────────────────────────────────────────────
+  fmt:
+    name: "rustfmt"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Clippy ─────────────────────────────────────────────────────────────────
+  clippy:
+    name: "clippy"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all -- -D warnings

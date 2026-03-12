@@ -1,0 +1,13 @@
+[package]
+name = "snmalloc-frontend"
+description = "Per-thread allocator and remote deallocation cache for the snmalloc Rust port."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+snmalloc-backend = { workspace = true }

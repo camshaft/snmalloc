@@ -1,0 +1,4 @@
+/target
+# Cargo.lock is intentionally omitted for libraries; each consuming application
+# locks its own dependency graph.
+/Cargo.lock

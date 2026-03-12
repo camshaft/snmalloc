@@ -1,0 +1,22 @@
+[package]
+name = "snmalloc-core"
+description = "Core data structures and algorithms for the snmalloc Rust port."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+snmalloc-pal = { workspace = true }
+snmalloc-aal = { workspace = true }
+
+# loom is a regular (non-dev) dependency when compiled with --cfg loom, because
+# snmalloc_core::atomics re-exports loom's atomic types from *library* code.
+# Cargo evaluates the cfg() predicate below against the active RUSTFLAGS, so:
+#   RUSTFLAGS="--cfg loom" cargo test -p snmalloc-core
+# correctly pulls in loom for both the lib and its dependents.
+[target.'cfg(loom)'.dependencies]
+loom = { workspace = true }
