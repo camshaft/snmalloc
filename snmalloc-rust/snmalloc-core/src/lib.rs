@@ -580,8 +580,9 @@ pub mod ptrwrap {
         /// Cast to a different pointee type using `as *mut U`, preserving bounds.
         ///
         /// Mirrors `as_static<U>()` (via `static_cast`) in `ds_core/ptrwrap.h`.
-        /// Unlike the C++ version this is a raw pointer `as`-cast; the caller
-        /// must ensure the pointee types are compatible.
+        /// Unlike C++ `static_cast<>`, this is a raw `as *mut U` pointer cast and
+        /// does **not** validate type-hierarchy compatibility at compile time.
+        /// The caller must ensure the pointed-to types are compatible.
         ///
         /// # Safety
         ///
@@ -733,6 +734,14 @@ pub mod ptrwrap {
         }
     }
 
+    impl<T, B: Bound> Default for AtomicCapPtr<T, B> {
+        /// Initialise to null, matching the C++ default constructor
+        /// `AtomicCapPtr() : AtomicCapPtr(nullptr)`.
+        fn default() -> Self {
+            Self::new(CapPtr::null())
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -816,6 +825,9 @@ pub mod ptrwrap {
             assert_eq!(alloc.unsafe_ptr(), raw);
         }
 
+        // AtomicCapPtr must not be used outside a loom::model() closure when
+        // compiled under loom.  The non-loom test exercises the API directly.
+        #[cfg(not(loom))]
         #[test]
         fn atomic_cap_ptr() {
             use crate::atomics::Ordering;
@@ -834,6 +846,22 @@ pub mod ptrwrap {
             let old = a.exchange(p, Ordering::AcqRel);
             assert!(old.is_null());
             assert_eq!(a.load(Ordering::Acquire).unsafe_ptr(), raw);
+        }
+
+        #[cfg(not(loom))]
+        #[test]
+        fn atomic_cap_ptr_default_is_null() {
+            let a: AtomicCapPtr<u8, Alloc> = Default::default();
+            assert!(a.load(crate::atomics::Ordering::Relaxed).is_null());
+        }
+
+        // Loom model for AtomicCapPtr.
+        // Run with: RUSTFLAGS="--cfg loom" cargo test -p snmalloc-core
+        #[cfg(loom)]
+        #[test]
+        fn atomic_cap_ptr_loom() {
+            // TODO: Add loom::model tests once there is more concurrent
+            // usage of AtomicCapPtr to model.
         }
     }
 }
