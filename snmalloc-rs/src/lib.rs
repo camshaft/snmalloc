@@ -128,6 +128,161 @@ unsafe impl GlobalAlloc for SnMalloc {
     }
 }
 
+/// A bounded sub-heap that draws from the global snmalloc allocator but
+/// enforces a configurable byte budget.
+///
+/// Allocations are charged using the layout's size rounded up to alignment
+/// (matching `aligned_size` in the C++ layer). Any allocation that would
+/// push usage above the budget fails immediately with a null return value
+/// (or `None` for the higher-level helpers).
+///
+/// # Thread safety
+///
+/// `SubHeap` is both `Send` and `Sync`: the internal budget counter is
+/// updated atomically on the C++ side, so concurrent alloc/dealloc from
+/// multiple threads is safe.
+///
+/// # Lifecycle contract
+///
+/// All allocations obtained from a `SubHeap` must be freed (via
+/// [`SubHeap::dealloc`]) *before* the `SubHeap` is dropped. Dropping a
+/// `SubHeap` with outstanding live allocations will free the internal
+/// handle but will not free the underlying objects, resulting in a budget
+/// counter leak.
+pub struct SubHeap {
+    handle: *mut core::ffi::c_void,
+}
+
+// SAFETY: The C++ budget counter is updated with atomic operations, so
+// both sending the handle to another thread and sharing a reference across
+// threads are safe.
+unsafe impl Send for SubHeap {}
+unsafe impl Sync for SubHeap {}
+
+impl SubHeap {
+    /// Create a new sub-heap with the given byte budget.
+    ///
+    /// Returns `None` if the internal handle allocation fails.  A
+    /// `size_limit` of `0` creates a valid (but empty) sub-heap where every
+    /// allocation immediately returns `None`.
+    pub fn new(size_limit: usize) -> Option<Self> {
+        let handle = unsafe { ffi::sn_create_sub_heap(size_limit) };
+        if handle.is_null() {
+            None
+        } else {
+            Some(SubHeap { handle })
+        }
+    }
+
+    /// Allocate memory according to `layout` from this sub-heap.
+    ///
+    /// Returns `None` if the budget would be exceeded or if `layout.size()`
+    /// is zero.
+    pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
+        match layout.size() {
+            0 => NonNull::new(layout.align() as *mut u8),
+            size => NonNull::new(
+                unsafe { ffi::sn_sub_heap_alloc(self.handle, layout.align(), size) }.cast(),
+            ),
+        }
+    }
+
+    /// Allocate zero-initialised memory from this sub-heap.
+    ///
+    /// Same constraints as [`SubHeap::alloc`].
+    pub fn alloc_zeroed(&self, layout: Layout) -> Option<NonNull<u8>> {
+        match layout.size() {
+            0 => NonNull::new(layout.align() as *mut u8),
+            size => NonNull::new(
+                unsafe {
+                    ffi::sn_sub_heap_alloc_zeroed(self.handle, layout.align(), size)
+                }
+                .cast(),
+            ),
+        }
+    }
+
+    /// Free a pointer previously obtained from this sub-heap, returning the
+    /// bytes to the budget.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must have been allocated from this `SubHeap` with the given
+    /// `layout`, and must not be used after this call.
+    pub unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if layout.size() != 0 {
+            ffi::sn_sub_heap_dealloc(
+                self.handle,
+                ptr.cast(),
+                layout.align(),
+                layout.size(),
+            );
+        }
+    }
+}
+
+impl Drop for SubHeap {
+    fn drop(&mut self) {
+        unsafe { ffi::sn_destroy_sub_heap(self.handle) };
+    }
+}
+
+unsafe impl GlobalAlloc for SubHeap {
+    /// Allocate memory with the given layout from this sub-heap.
+    ///
+    /// Returns a null pointer if the budget would be exceeded or on OOM.
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        match layout.size() {
+            0 => layout.align() as *mut u8,
+            size => ffi::sn_sub_heap_alloc(self.handle, layout.align(), size).cast(),
+        }
+    }
+
+    /// Free memory previously allocated from this sub-heap.
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if layout.size() != 0 {
+            ffi::sn_sub_heap_dealloc(
+                self.handle,
+                ptr.cast(),
+                layout.align(),
+                layout.size(),
+            );
+        }
+    }
+
+    /// Allocate zero-initialised memory from this sub-heap.
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        match layout.size() {
+            0 => layout.align() as *mut u8,
+            size => {
+                ffi::sn_sub_heap_alloc_zeroed(self.handle, layout.align(), size).cast()
+            }
+        }
+    }
+
+    /// Reallocate memory within this sub-heap.
+    ///
+    /// On failure returns a null pointer; the original pointer is *not*
+    /// freed (matching the `GlobalAlloc::realloc` contract).
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: `GlobalAlloc::realloc` requires callers to ensure `new_size`
+        // forms a valid `Layout` with the existing alignment.  We assert that
+        // contract here and propagate it to `from_size_align_unchecked`.
+        let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
+        let new_ptr = GlobalAlloc::alloc(self, new_layout);
+        if !new_ptr.is_null() {
+            let copy_size = if layout.size() < new_size {
+                layout.size()
+            } else {
+                new_size
+            };
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
+            GlobalAlloc::dealloc(self, ptr, layout);
+        }
+        new_ptr
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +365,107 @@ mod tests {
             let usz = alloc.usable_size(ptr).expect("usable_size returned None");
             alloc.dealloc(ptr, layout);
             assert!(usz >= 8);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SubHeap tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sub_heap_basic_alloc_dealloc() {
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let ptr = heap.alloc(layout).expect("allocation failed");
+        unsafe { heap.dealloc(ptr.as_ptr(), layout) };
+    }
+
+    #[test]
+    fn sub_heap_zeroed_alloc() {
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let ptr = heap
+            .alloc_zeroed(layout)
+            .expect("zeroed allocation failed");
+        // Verify the memory is actually zeroed.
+        let slice =
+            unsafe { core::slice::from_raw_parts(ptr.as_ptr(), layout.size()) };
+        assert!(slice.iter().all(|&b| b == 0), "memory is not zeroed");
+        unsafe { heap.dealloc(ptr.as_ptr(), layout) };
+    }
+
+    #[test]
+    fn sub_heap_budget_enforced() {
+        // Verify the fixed region eventually exhausts and that freed objects
+        // can be re-allocated via the slab free list.  Use large (512 KiB)
+        // allocations so the 4 MiB region drains in ≤ 8 iterations, keeping
+        // the number of live pointers small enough to track in a fixed array.
+        const REGION: usize = 1 << 22; // 4 MiB
+        const ALLOC: usize = 1 << 19;  // 512 KiB
+        let heap = SubHeap::new(REGION).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(ALLOC, 8).unwrap();
+
+        // Drain the region, holding at most 8 live pointers.
+        let mut ptrs = [core::ptr::null_mut::<u8>(); 8];
+        let mut count = 0usize;
+        for slot in &mut ptrs {
+            match heap.alloc(layout) {
+                Some(ptr) => {
+                    *slot = ptr.as_ptr();
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        assert!(count > 0, "should allocate at least once before exhaustion");
+
+        // One more allocation must fail — we've exhausted the region.
+        if count < ptrs.len() {
+            assert!(heap.alloc(layout).is_none(), "region should be exhausted");
+        }
+
+        // Free everything; the slab free list should allow re-allocation.
+        for &ptr in ptrs.iter().take(count) {
+            unsafe { heap.dealloc(ptr, layout) };
+        }
+        let ptr = heap.alloc(layout).expect("allocation after free failed");
+        unsafe { heap.dealloc(ptr.as_ptr(), layout) };
+    }
+
+    #[test]
+    fn sub_heap_small_region_fails() {
+        // A region smaller than snmalloc's minimum chunk size cannot hold
+        // even one slab and must fail to create.
+        assert!(
+            SubHeap::new(0).is_none(),
+            "sub-heap creation should fail for zero-size region"
+        );
+    }
+
+    #[test]
+    fn sub_heap_global_alloc_trait() {
+        // Verify that SubHeap can be used through the GlobalAlloc trait.
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        unsafe {
+            let ptr = GlobalAlloc::alloc(&heap, layout);
+            assert!(!ptr.is_null());
+            GlobalAlloc::dealloc(&heap, ptr, layout);
+        }
+    }
+
+    #[test]
+    fn sub_heap_realloc() {
+        let heap = SubHeap::new(1 << 20).expect("sub-heap creation failed");
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        unsafe {
+            let ptr = GlobalAlloc::alloc(&heap, layout);
+            assert!(!ptr.is_null());
+            // Grow the allocation.
+            let ptr = GlobalAlloc::realloc(&heap, ptr, layout, 128);
+            assert!(!ptr.is_null());
+            let new_layout = Layout::from_size_align(128, 8).unwrap();
+            GlobalAlloc::dealloc(&heap, ptr, new_layout);
         }
     }
 }

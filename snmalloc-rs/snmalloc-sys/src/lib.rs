@@ -43,6 +43,53 @@ extern "C" {
     pub fn sn_rust_usable_size(p: *const c_void) -> usize;
 }
 
+extern "C" {
+    /// Create a sub-heap with the given byte budget.
+    ///
+    /// Returns an opaque handle, or a null pointer if the internal allocation
+    /// fails.  A `size_limit` of 0 creates a valid but empty sub-heap where
+    /// every allocation immediately returns null.
+    pub fn sn_create_sub_heap(size_limit: usize) -> *mut c_void;
+
+    /// Allocate from a sub-heap.
+    ///
+    /// Returns null if the budget would be exceeded or if the underlying
+    /// allocator fails.  The same `alignment` and `size` values must be
+    /// passed to `sn_sub_heap_dealloc` when freeing the returned pointer.
+    pub fn sn_sub_heap_alloc(
+        heap: *mut c_void,
+        alignment: usize,
+        size: usize,
+    ) -> *mut c_void;
+
+    /// Allocate zero-initialised memory from a sub-heap.
+    ///
+    /// Same contract as `sn_sub_heap_alloc`, but the returned memory is
+    /// zeroed.
+    pub fn sn_sub_heap_alloc_zeroed(
+        heap: *mut c_void,
+        alignment: usize,
+        size: usize,
+    ) -> *mut c_void;
+
+    /// Free a pointer previously allocated from a sub-heap, returning the
+    /// bytes to the budget.
+    ///
+    /// `alignment` and `size` must match the values used at allocation time.
+    pub fn sn_sub_heap_dealloc(
+        heap: *mut c_void,
+        ptr: *mut c_void,
+        alignment: usize,
+        size: usize,
+    );
+
+    /// Destroy a sub-heap and free its internal handle.
+    ///
+    /// All allocations from this sub-heap must have been freed before calling
+    /// this function.
+    pub fn sn_destroy_sub_heap(heap: *mut c_void);
+}
+
 #[cfg(feature = "libc-api")]
 extern "C" {
     /// Allocate `count` items of `size` length each.
